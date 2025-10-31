@@ -24,6 +24,7 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: gradle
+
       - name: Setup Gradle 8.10
         uses: gradle/actions/setup-gradle@v5
         with:
@@ -37,25 +38,15 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      # JitPack in settings.gradle aktivieren (für PhotoView)
+      # JitPack (für PhotoView) in settings.gradle ergänzen – ohne Here-Doc
       - name: Add JitPack to settings.gradle
         shell: bash
         run: |
           if grep -q 'dependencyResolutionManagement' settings.gradle; then
-            # JitPack in bestehendem repositories{}-Block ergänzen
             sed -i '/repositoriess*{/a        maven { url "https://jitpack.io" }' settings.gradle
           else
-            # Falls dein settings.gradle noch keinen Block hat: komplett hinzufügen
-            cat >> settings.gradle <<'EOF'
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-        maven { url "https://jitpack.io" }
-    }
-}
-EOF
+            printf '%s
+' \n              'dependencyResolutionManagement {' \n              '    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)' \n              '    repositories {' \n              '        google()' \n              '        mavenCentral()' \n              '        maven { url "https://jitpack.io" }' \n              '    }' \n              '}' >> settings.gradle
           fi
           echo "---- settings.gradle ----"
           sed -n '1,200p' settings.gradle
