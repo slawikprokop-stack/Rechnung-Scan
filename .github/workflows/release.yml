@@ -11,18 +11,14 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Unzip Android project
         run: |
           unzip -o Rechnungsstempel-Android.zip
-          echo "Root files:"; ls -la
-          echo "App module:"; ls -la app || true
-          echo "----- settings.gradle (vor Patch) -----"
-          sed -n '1,160p' settings.gradle || true
+          ls -la
 
-      - name: Set up Java 17 (Temurin) + Gradle (ohne Wrapper)
+      - name: Set up JDK 17 (Temurin) + Gradle (ohne Wrapper)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -36,68 +32,63 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept licenses & install SDK
+      - name: Accept licenses & install SDK 34
         run: |
           yes | sdkmanager --licenses
-          # Einheitlich auf 34 pinnen, damit Tools sicher vorhanden sind
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      # JitPack in settings.gradle einschalten (nötig für PhotoView)
-      - name: Enable JitPack repository
+      # JitPack in settings.gradle aktivieren (für PhotoView)
+      - name: Add JitPack to settings.gradle
+        shell: bash
         run: |
-          if ! grep -q 'jitpack.io' settings.gradle; then
-            awk '
-              BEGIN{inDRM=0; inRep=0}
-              /dependencyResolutionManagement/ {inDRM=1}
-              {print}
-              inDRM && /repositories *{/ && !inRep {inRep=1; next}
-              inDRM && inRep && /^s*}/ {
-                print "        maven { url \"https://jitpack.io\" }"
-                inRep=0; inDRM=0
-              }
-            ' settings.gradle > settings.gradle.patched && mv settings.gradle.patched settings.gradle
+          if grep -q 'dependencyResolutionManagement' settings.gradle; then
+            # JitPack in bestehendem repositories{}-Block ergänzen
+            sed -i '/repositoriess*{/a        maven { url "https://jitpack.io" }' settings.gradle
+          else
+            # Falls dein settings.gradle noch keinen Block hat: komplett hinzufügen
+            cat >> settings.gradle <<'EOF'
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url "https://jitpack.io" }
+    }
+}
+EOF
           fi
-          echo "----- settings.gradle (nach Patch) -----"
+          echo "---- settings.gradle ----"
           sed -n '1,200p' settings.gradle
 
-      - name: Build release (unsigned)
+      - name: Assemble release (unsigned)
         run: gradle assembleRelease --no-daemon --stacktrace
 
-      # --- Keystore on-the-fly erzeugen (bitte Artefakt später sicher weglegen!) ---
-      - name: Generate ephemeral release keystore
-        id: ks
+      - name: Generate temporary keystore
         run: |
-          export STORE_PW=$(openssl rand -hex 16)
-          export KEY_PW=$(openssl rand -hex 16)
-          export ALIAS=app
+          STORE_PW=$(openssl rand -hex 16)
+          KEY_PW=$(openssl rand -hex 16)
+          ALIAS=app
+          echo "STORE_PW=$STORE_PW" >> $GITHUB_ENV
+          echo "KEY_PW=$KEY_PW" >> $GITHUB_ENV
+          echo "ALIAS=$ALIAS"   >> $GITHUB_ENV
           keytool -genkeypair -v -keystore release-key.jks \n            -storepass "$STORE_PW" -keypass "$KEY_PW" -alias "$ALIAS" \n            -keyalg RSA -keysize 2048 -validity 36500 \n            -dname "CN=Svjatoslav,O=Org,L=Hamburg,S=HH,C=DE"
-          printf "ALIAS=%s
-STORE_PW=%s
-KEY_PW=%s
-" "$ALIAS" "$STORE_PW" "$KEY_PW" > release-key-info.txt
 
-      # --- zipalign (vor dem Signieren) & apksigner ---
-      - name: Zipalign APK
+      - name: Zipalign (before signing)
         run: |
           IN=app/build/outputs/apk/release/app-release-unsigned.apk
           OUT_ALIGNED=app/build/outputs/apk/release/app-release-aligned.apk
           $ANDROID_HOME/build-tools/34.0.0/zipalign -P 16 -f -v 4 "$IN" "$OUT_ALIGNED"
           $ANDROID_HOME/build-tools/34.0.0/zipalign -c -P 16 -v 4 "$OUT_ALIGNED"
 
-      - name: Sign APK (apksigner)
+      - name: Sign APK
         run: |
           OUT_ALIGNED=app/build/outputs/apk/release/app-release-aligned.apk
           OUT_SIGNED=app/build/outputs/apk/release/app-release-signed.apk
-          # Passwörter/Alias aus Datei lesen
-          source release-key-info.txt
           $ANDROID_HOME/build-tools/34.0.0/apksigner sign \n            --ks release-key.jks \n            --ks-pass pass:$STORE_PW \n            --key-pass pass:$KEY_PW \n            --ks-key-alias $ALIAS \n            --out "$OUT_SIGNED" \n            "$OUT_ALIGNED"
           $ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose "$OUT_SIGNED"
 
-      - name: Upload signed APK + keystore (Artefakte)
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: rechnungsstempel-release-signed
-          path: |
-            app/build/outputs/apk/release/app-release-signed.apk
-            release-key.jks
-            release-key-info.txt
+          path: app/build/outputs/apk/release/app-release-signed.apk
