@@ -17,27 +17,55 @@ jobs:
       - name: Unzip Android project
         run: |
           unzip -o Rechnungsstempel-Android.zip
-          ls -la
+          echo "Root files:"; ls -la
+          echo "App module:"; ls -la app || true
+          echo "----- settings.gradle (vor Patch) -----"
+          sed -n '1,120p' settings.gradle || true
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
+          cache: gradle
+
+      # Gradle ohne Wrapper verwenden
+      - name: Setup Gradle 8.10
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '8.10'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install SDK packages
+      - name: Accept licenses & install SDK (mit Fallback)
         run: |
           yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          # Erst versuchen wir API 35, fällt bei Bedarf auf 34 zurück – ohne 
+/Backslash-Fehler
+          (sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0") || \n          (sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0")
 
-      - name: Make Gradle wrapper executable
-        run: chmod +x ./gradlew
+      # --- WICHTIG: JitPack in settings.gradle einspritzen ---
+      - name: Enable JitPack repository (patch settings.gradle)
+        run: |
+          # Fügt in dependencyResolutionManagement/repositories den JitPack-Eintrag ein, falls nicht vorhanden
+          if ! grep -q 'jitpack.io' settings.gradle; then
+            awk '
+              BEGIN{inDRM=0; inRep=0}
+              /dependencyResolutionManagement/ {inDRM=1}
+              {print}
+              inDRM && /repositories *{/ && !inRep {inRep=1; next}
+              inDRM && inRep && /^s*}/ {
+                print "        maven { url \"https://jitpack.io\" }"
+                inRep=0; inDRM=0
+              }
+            ' settings.gradle > settings.gradle.patched && mv settings.gradle.patched settings.gradle
+          fi
+          echo "----- settings.gradle (nach Patch) -----"
+          sed -n '1,160p' settings.gradle
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug
+      - name: Build debug APK (Gradle ohne Wrapper)
+        run: gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
